@@ -10,7 +10,6 @@ log = pe_global.log
 
 
 def test_try_fetching_cookies_returns_session_and_keepalive_cookies():
-    assert os.path.exists("/usr/local/bin/geckodriver"), "Missing geckodriver at /usr/local/bin/geckodriver"
     sys.argv = ["pytest", "authentic.json"]
     pe_setup.setup()
     

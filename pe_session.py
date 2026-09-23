@@ -1,18 +1,15 @@
 import traceback
 
+import requests
 from requests import TooManyRedirects
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.support import expected_conditions as EC
 
 import faulthandler
 
 from anticaptchaofficial.imagecaptcha import *
 
-from PIL import Image
 import json
+import random
+import re
 
 import pe_api
 import phone_api
@@ -45,22 +42,6 @@ def session_setup(captcha: str, profile: str, pe_username: str, pe_password: str
 
 
 
-def get_captcha(driver, element, path):
-    
-    location = element.location
-    size = element.size
-    driver.save_screenshot(path)
-
-    image = Image.open(path)
-
-    left = location['x']
-    top = location['y']
-    right = location['x'] + size['width']
-    bottom = location['y'] + size['height']
-
-    image = image.crop((left, top, right, bottom))
-    image.save(path)
-
 def solve(image_name: str, human: bool = False):
     
     if human:
@@ -81,9 +62,8 @@ def solve(image_name: str, human: bool = False):
 def try_fetching_cookies(human: bool = False):
 
     url = "https://projecteuler.net/sign_in"
+    captcha_url = "https://projecteuler.net/captcha/show_captcha.php"
     filename = "web_utils/current-captcha.png"
-    pre_form_filename = "web_utils/form.png"
-    post_form_filename = "web_utils/postform.png"
 
     bot_password = PE_PASSWORD or os.environ.get("BOT_KEY")
     if not bot_password:
@@ -93,68 +73,37 @@ def try_fetching_cookies(human: bool = False):
     if 'web_utils' not in os.listdir('.'):
         os.mkdir('web_utils')
 
-    service = Service(executable_path='/usr/local/bin/geckodriver')
-    options = webdriver.FirefoxOptions()
-    options.add_argument("-headless")
-
-    driver = None
     try:
-        driver = webdriver.Firefox(service=service, options=options)
-        
-        driver.set_page_load_timeout(30)
-        driver.implicitly_wait(10)
-        driver.set_window_size(1080, 720)
+        session = requests.Session()
 
-        driver.get(url)
-        
-        captcha = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "captcha_image"))
-        )
-        get_captcha(driver, captcha, filename)
+        form = session.get(url, timeout=30)
+        form.raise_for_status()
+        csrf_token = re.search(
+            r'name="sign_in_form".*?name="csrf_token" value="([^"]+)"', form.text, re.S
+        ).group(1)
+
+        captcha = session.get(f"{captcha_url}?{random.random()}", timeout=30)
+        captcha.raise_for_status()
+        with open(filename, "wb") as f:
+            f.write(captcha.content)
 
         captcha_result = solve(filename, human)
         log.info(f"[-] Tried to guess {captcha_result} as Captcha")
 
-        driver.find_element("xpath", 
-            "//input[@id='username' and @name='username']"
-        ).send_keys(PE_USERNAME)
+        session.post(url, data={
+            "csrf_token": csrf_token,
+            "username": PE_USERNAME,
+            "password": bot_password,
+            "captcha": captcha_result,
+            "remember_me": "1",
+            "sign_in": "Sign In",
+        }, timeout=30)
 
-        driver.find_element("xpath", 
-            "//input[@id='password' and @name='password']"
-        ).send_keys(bot_password)
-
-        driver.find_element("xpath", 
-            "//input[@id='captcha' and @name='captcha']"
-        ).send_keys(captcha_result)
-
-        driver.find_element("xpath", 
-            "//input[@id='remember_me' and @name='remember_me']"
-        ).click()
-
-        driver.save_screenshot(pre_form_filename)
-
-        driver.find_element("xpath", 
-            "//input[@name='sign_in' and @type='submit']"
-        ).click()
-        
-        driver.save_screenshot(post_form_filename)
-
-        cookies = driver.get_cookies()
-        return cookies
+        return [{"name": c.name, "value": c.value} for c in session.cookies]
 
     except Exception as e:
-        # logging.error(f"[!] Error during browser automation: {e}")
-        # traceback.print_exc()
         log.exception(e)
         return []
-    
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception as e:
-                log.exception(e)
-                # console.log(f"[!] Error closing driver: {e}")
 
 
 def refresh_tokens():
