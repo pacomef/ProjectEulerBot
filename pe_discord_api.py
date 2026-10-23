@@ -975,7 +975,7 @@ async def command_leaderboard(ctx):
 
 
 @bot.slash_command(name="best-solvers", description="Rank the members by their solves of the last few days")
-@option("days", description="The number of past days to consider", min_value=1, max_value=14)
+@option("days", description="The number of past days to consider", min_value=1)
 @option("criterion", description="How the members are ranked", choices=pe_plot.BEST_SOLVERS_CRITERIA, default=pe_plot.BEST_SOLVERS_CRITERIA[0])
 @option("top", description="The number of members displayed", min_value=1, max_value=30, default=15)
 @pe_decorators.command
