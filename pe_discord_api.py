@@ -974,6 +974,30 @@ async def command_leaderboard(ctx):
     return await inters.leaderboard_page(ctx, leaderboard_data, True, True, 10)
 
 
+@bot.slash_command(name="best-solvers", description="Rank the members by their solves of the last few days")
+@option("days", description="The number of past days to consider", min_value=1, max_value=14)
+@option("criterion", description="How the members are ranked", choices=pe_plot.BEST_SOLVERS_CRITERIA, default=pe_plot.BEST_SOLVERS_CRITERIA[0])
+@option("top", description="The number of members displayed", min_value=1, max_value=30, default=15)
+@pe_decorators.command
+async def command_best_solvers(ctx, days: int, criterion: str, top: int):
+
+    await ctx.defer()
+
+    m = pe_api.Member(_discord_id = ctx.author.id)
+    caller_username = await m.username() if await m.is_discord_linked() else None
+
+    path = await pe_plot.generate_graph_best_solvers(days, criterion, top, caller_username)
+
+    if path is None or not os.path.exists(path):
+        return await ctx.respond(f"No member has solves matching this criterion in the last {days} day{'s' * (days > 1)}.")
+
+    try:
+        return await ctx.respond(file=discord.File(path))
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
 @bot.slash_command(name="botisdown")
 @option("details", description="If you want to describe why you think so", default="")
 @pe_decorators.command

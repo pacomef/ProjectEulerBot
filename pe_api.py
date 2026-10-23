@@ -248,14 +248,11 @@ class Problem:
                 solvers = 0
 
             # log.info(properties)
-            if len(properties) == 3:    
-                difficulty = None
-                title = properties[2].replace("\"", "")
-            elif len(properties) == 4:
-                difficulty = int(properties[2].split(" ")[2])
-                title = properties[3].replace("\"", "")
-            else:
-                raise Exception("Properties did not have 3 or 4 fields, resulted in title not being defined")
+            # The fields are "Problem N", "Solved by N members", then optionally "Difficulty: Level N [P%]" and
+            # "Completed on ..." (if the account solved it), and the title is always the last one
+            difficulty_fields = [x for x in properties if x.startswith("Difficulty:")]
+            difficulty = int(difficulty_fields[0].split(" ")[2]) if difficulty_fields else None
+            title = properties[-1].replace("\"", "")
             
             problem = Problem(problem_id, _problem_id=problem_id, _name=title, _unix_publication=timestamps[problem_id - 1], _solves=solvers, _difficulty_rating=difficulty)
             res_list.append(problem)
@@ -2222,11 +2219,21 @@ def get_solves_in_database():
     connection = pe_database.open_connection()
 
     temp_query = "SELECT * FROM solves;"
-    
+
     data = pe_database.query(temp_query, connection)
     pe_database.close_connection(connection)
 
     return data
+
+
+# Get the solves of the last 'days' days in the database, without the members with a private profile
+def get_recent_public_solves_in_database(days: int):
+
+    temp_query = "SELECT solves.member, solves.problem, solves.position FROM solves \
+        LEFT JOIN members ON members.username = solves.member \
+        WHERE solves.solve_date >= datetime('now', ?) AND COALESCE(members.private, 0) = 0;"
+
+    return pe_database.query_single(temp_query, (f"-{days} days",))
 
 
 # Get the global solves in the database

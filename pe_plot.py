@@ -372,12 +372,133 @@ async def generate_graph_difficulty(member: pe_api.Member) -> str:
     
     # Add the white gridlines to match the monthly graph
     fig.update_xaxes(showgrid=True, gridcolor='white', gridwidth=1.5)
-    fig.update_yaxes(title_text="Difficulty (%)", showgrid=True, gridcolor='white', gridwidth=1.5, rangemode='tozero')
+    fig.update_yaxes(title_text="Difficulty level", showgrid=True, gridcolor='white', gridwidth=1.5, rangemode='tozero')
     
     # 4. Save and return path
     filename = f"images_saves/{member._username}_graph_difficulty.png"
     fig.write_image(filename, scale=2)
     
+    return filename
+
+
+BEST_SOLVERS_CRITERIA = [
+    "Number of solves",
+    "Sum of the difficulty levels of the solves (a level 0 problem adds 0, a level 40 adds 40)",
+    "Average difficulty level of the solves (only members with at least 3 rated solves)",
+    "Number of solves made among the first 100 solvers of the problem",
+]
+
+# (legend name, highest level of the bucket, color), the difficulty of a problem is its level (0, 1, ..., 40),
+# and problems without a level yet have a difficulty of None
+DIFFICULTY_BUCKETS = [
+    ("Levels 0-9", 9, "#9ecae1"),
+    ("Levels 10-19", 19, "#4292c6"),
+    ("Levels 20-29", 29, "#08519c"),
+    ("Levels 30+", float("inf"), "#08306b"),
+    ("Not rated yet", None, "#bdbdbd"),
+]
+
+
+def _difficulty_bucket(difficulty: Optional[int]) -> str:
+    if difficulty is None:
+        return DIFFICULTY_BUCKETS[-1][0]
+    return next(name for name, high, _ in DIFFICULTY_BUCKETS[:-1] if difficulty <= high)
+
+
+async def generate_graph_best_solvers(days: int, criterion: str, top: int, caller_username: Optional[str]) -> Optional[str]:
+    rows = pe_api.get_recent_public_solves_in_database(days)
+    if len(rows) == 0:
+        return None
+
+    # 1. Gather the stats of each member
+    stats = {}
+    for row in rows:
+        difficulty = await pe_api.Problem(row["problem"]).difficulty() if row["problem"] > 0 else None
+        s = stats.setdefault(row["member"], {"solves": [], "count": 0, "rated": 0, "difficulty_sum": 0, "first_100": 0})
+        s["solves"].append((difficulty, row["position"]))
+        s["count"] += 1
+        s["rated"] += difficulty is not None
+        s["difficulty_sum"] += difficulty or 0
+        s["first_100"] += row["position"] is not None and row["position"] <= 100
+
+    # 2. Score each member, and the contribution of each solve to the bar
+    def score(s):
+        if criterion == BEST_SOLVERS_CRITERIA[0]:
+            return s["count"]
+        if criterion == BEST_SOLVERS_CRITERIA[1]:
+            return s["difficulty_sum"]
+        if criterion == BEST_SOLVERS_CRITERIA[2]:
+            return s["difficulty_sum"] / s["rated"] if s["rated"] >= 3 else 0
+        return s["first_100"]
+
+    def contribution(s, difficulty, position):
+        if criterion == BEST_SOLVERS_CRITERIA[0]:
+            return 1
+        if criterion == BEST_SOLVERS_CRITERIA[1]:
+            return difficulty or 0
+        if criterion == BEST_SOLVERS_CRITERIA[2]:
+            return (difficulty or 0) / s["rated"]
+        return int(position is not None and position <= 100)
+
+    ranking = sorted(
+        [(member, s) for member, s in stats.items() if score(s) > 0],
+        key=lambda x: (score(x[1]), x[1]["count"], x[1]["difficulty_sum"]), reverse=True
+    )
+    if len(ranking) == 0:
+        return None
+
+    # 3. Keep the top, and add the caller at the bottom if they are not in it
+    displayed = [(rank + 1, member, s) for rank, (member, s) in enumerate(ranking)]
+    shown = displayed[:top]
+    shown += [d for d in displayed[top:] if d[1] == caller_username]
+
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    labels = []
+    for rank, member, _ in shown:
+        label = f"{medals.get(rank, f'{rank}.')} {member}"
+        labels.append(f"<b>{label}</b>" if member == caller_username else label)
+
+    # 4. Build the plot, one stacked bar per member, split by difficulty
+    fig = go.Figure()
+    for name, _, color in DIFFICULTY_BUCKETS:
+        values = [
+            sum(contribution(s, d, p) for d, p in s["solves"] if _difficulty_bucket(d) == name)
+            for _, _, s in shown
+        ]
+        fig.add_trace(go.Bar(y=labels, x=values, name=name, orientation='h', marker_color=color))
+
+    def value_text(s):
+        value = score(s)
+        text = f"level {value:.1f}" if criterion == BEST_SOLVERS_CRITERIA[2] else str(int(value))
+        return text if criterion == BEST_SOLVERS_CRITERIA[0] else f"{text}  ({s['count']} solve{'s' * (s['count'] > 1)})"
+
+    fig.add_trace(go.Scatter(
+        y=labels, x=[score(s) for _, _, s in shown], mode='text', showlegend=False,
+        text=[" " + value_text(s) for _, _, s in shown], textposition='middle right', textfont=dict(size=14)
+    ))
+
+    start = (datetime.datetime.now(pytz.utc) - datetime.timedelta(days=days)).strftime("%b %d")
+    end = datetime.datetime.now(pytz.utc).strftime("%b %d")
+    fig.update_layout(
+        title=dict(text=f"Best solvers of the last {days} day{'s' * (days > 1)} ({start} - {end}, UTC)<br>"
+                        f"<sup>{criterion} · {len(rows)} solves by {len(stats)} members</sup>", font=dict(size=24)),
+        barmode='stack',
+        plot_bgcolor='#f0f0f0',         # Inner graph area (light gray)
+        paper_bgcolor='white',          # Outer margins (solid white)
+        width=1200, height=200 + 40 * len(shown),
+        margin=dict(l=20, r=20, t=100, b=20),
+        legend=dict(orientation='h', yanchor='bottom', y=1.0, xanchor='right', x=1, traceorder='normal')
+    )
+
+    # Leave some room on the right for the value labels
+    max_score = max(score(s) for _, _, s in shown)
+    fig.update_xaxes(showgrid=True, gridcolor='white', gridwidth=1.5, range=[0, max_score * 1.25])
+    fig.update_yaxes(autorange='reversed', tickfont=dict(size=14), ticksuffix="  ")
+
+    # 5. Save and return path
+    filename = f"images_saves/best_solvers_{days}_{int(time.time() * 1000)}.png"
+    fig.write_image(filename, scale=2)
+
     return filename
 
 
