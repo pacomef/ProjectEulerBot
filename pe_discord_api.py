@@ -959,8 +959,6 @@ async def command_force_new_session(ctx):
     values = await asyncio.to_thread(pe_session.refresh_tokens)
     success = not(any([values[k] is None for k in values.keys()]))
 
-    pe_api.COOKIES = values
-
     return await ctx.respond(f"Done. Returned keys are non-empty: {success}")
 
 

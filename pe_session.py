@@ -140,6 +140,7 @@ def refresh_tokens():
     else:
         phone_api.bot_crashed("Failed to refresh token")
         log.error("Failed to refresh token")
+        return values
 
     with open(PROFILE_NAME, "r") as f:
         data = json.load(f)
@@ -164,7 +165,7 @@ async def is_connected() -> bool:
         return False
     except pe_api.EulerRequestFail:
         return False
-    return PE_USERNAME in pe_request.response
+    return bool(pe_request.response.strip()) and (not PE_USERNAME or PE_USERNAME in pe_request.response)
 
 
 async def is_website_active() -> bool:

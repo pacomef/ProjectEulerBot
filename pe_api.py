@@ -171,6 +171,8 @@ class ProjectEulerRequest:
                                 return instance
                                 
                     except Exception as err:
+                        if isinstance(err, EulerRequestFail) and instance.status == 401:
+                            raise
                         if not isinstance(err, EulerRequestFail):
                             phone_api.bot_crashed(str(err))
                             cls.request_failed()
