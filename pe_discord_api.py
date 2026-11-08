@@ -119,10 +119,16 @@ async def major_update() -> bool:
         if await member.private():
             continue
 
+        # Banned members still get their solves saved, they are just not announced
+        announcement_banned = is_announcement_banned(await member.username())
+
         for solve in solves:
             
             problem: pe_api.Problem = solve.problem()
             await pe_api.push_solve_to_database(member, solve.problem())
+
+            if announcement_banned:
+                continue
 
             for channel_id in pe_global.CHANNELS_TO_ANNOUNCE:
                 
@@ -151,7 +157,7 @@ async def major_update() -> bool:
             if await member.is_discord_linked():
                 await update_member_roles(member)
             
-            for channel_id in pe_global.SPECIAL_CHANNELS_TO_ANNOUNCE:
+            for channel_id in ([] if announcement_banned else pe_global.SPECIAL_CHANNELS_TO_ANNOUNCE):
                 channel = bot.get_channel(channel_id)
                 sending_message = await member.username_ping() + " has just reached level {0}, congratulations!"
                 sending_message = sending_message.format(await member.solve_count() // 25)
@@ -160,7 +166,7 @@ async def major_update() -> bool:
         if await member.is_discord_linked() and await member.solve_count() == len(await member.solve_array()):
             await update_member_roles(member)
 
-        if awards is None:
+        if awards is None or announcement_banned:
             continue
 
         for part in [0, 1, 2]:
@@ -962,6 +968,61 @@ async def command_force_new_session(ctx):
     pe_api.COOKIES = values
 
     return await ctx.respond(f"Done. Returned keys are non-empty: {success}")
+
+
+def is_announcement_banned(username: str) -> bool:
+    data = pe_database.query_single("SELECT 1 FROM announcement_bans WHERE username = ?;", (username,))
+    return len(data) > 0
+
+
+def linked_username(discord_id: int) -> Optional[str]:
+    data = pe_database.query_single("SELECT username FROM members WHERE discord_id = ?;", (str(discord_id),))
+    return data[0]["username"] if len(data) > 0 else None
+
+
+@bot.slash_command(name="announce-ban", description="Stop announcing the solves and awards of a member")
+@option("member", description="The member to ban from the announcements")
+@option("reason", description="Why the member is banned", default = "")
+@pe_decorators.command
+async def command_announce_ban(ctx, member: discord.User, reason: str):
+
+    await ctx.defer(ephemeral=True)
+
+    if not await sufficient_permissions(ctx.guild.get_member(ctx.author.id)):
+        return await ctx.respond("You need to be a moderator or more to use this, sorry!", ephemeral=True)
+
+    username = linked_username(member.id)
+    if username is None:
+        return await ctx.respond(f"{member.mention} isn't linked to any Project Euler account.", ephemeral=True)
+
+    if is_announcement_banned(username):
+        return await ctx.respond(f"`{username}` is already banned from the announcements.", ephemeral=True)
+
+    pe_database.query_single(
+        "INSERT INTO announcement_bans (username, discord_id, banned_by, reason, banned_at) VALUES (?, ?, ?, ?, ?);",
+        (username, str(member.id), str(ctx.author.id), reason, int(time.time()))
+    )
+
+    return await ctx.respond(f"`{username}` won't be announced anymore.", ephemeral=True)
+
+
+@bot.slash_command(name="announce-unban", description="Announce the solves and awards of a member again")
+@option("member", description="The member to unban from the announcements")
+@pe_decorators.command
+async def command_announce_unban(ctx, member: discord.User):
+
+    await ctx.defer(ephemeral=True)
+
+    if not await sufficient_permissions(ctx.guild.get_member(ctx.author.id)):
+        return await ctx.respond("You need to be a moderator or more to use this, sorry!", ephemeral=True)
+
+    username = linked_username(member.id)
+    if username is None or not is_announcement_banned(username):
+        return await ctx.respond(f"{member.mention} isn't banned from the announcements.", ephemeral=True)
+
+    pe_database.query_single("DELETE FROM announcement_bans WHERE username = ?;", (username,))
+
+    return await ctx.respond(f"`{username}` will be announced again.", ephemeral=True)
 
 
 @bot.slash_command(name="leaderboard")
